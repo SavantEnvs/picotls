@@ -1,0 +1,8 @@
+project: savantenvs/picotls
+target: fuzz-server-hello
+testsuite:
+  - https://$MAYHEM_DOMAIN/$MAYHEM_PROJECT/$MAYHEM_TARGET/testsuite.tar
+  - file://mayhem/fuzz-server-hello/testsuite
+cmds:
+  - cmd: /mayhem/fuzz-server-hello
+    libfuzzer: true
