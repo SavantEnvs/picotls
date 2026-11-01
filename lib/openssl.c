@@ -1872,18 +1872,13 @@ Exit:
     return ret;
 }
 
-static int verify_cert_chain(X509_STORE *store, X509 *cert, STACK_OF(X509) * chain, int is_server, const char *server_name,
-                             int *ossl_x509_err)
+static int verify_cert_chain(X509_STORE_CTX *verify_ctx, X509_STORE *store, X509 *cert, STACK_OF(X509) * chain, int is_server,
+                             const char *server_name, int *ossl_x509_err)
 {
-    X509_STORE_CTX *verify_ctx;
     int ret;
     *ossl_x509_err = 0;
 
     /* verify certificate chain */
-    if ((verify_ctx = X509_STORE_CTX_new()) == NULL) {
-        ret = PTLS_ERROR_NO_MEMORY;
-        goto Exit;
-    }
     if (X509_STORE_CTX_init(verify_ctx, store, cert, chain) != 1) {
         ret = PTLS_ERROR_LIBRARY;
         goto Exit;
@@ -1943,8 +1938,6 @@ static int verify_cert_chain(X509_STORE *store, X509 *cert, STACK_OF(X509) * cha
     ret = 0;
 
 Exit:
-    if (verify_ctx != NULL)
-        X509_STORE_CTX_free(verify_ctx);
     return ret;
 }
 
@@ -1955,8 +1948,9 @@ static int verify_cert(ptls_verify_certificate_t *_self, ptls_t *tls, const char
     ptls_openssl_verify_certificate_t *self = (ptls_openssl_verify_certificate_t *)_self;
     X509 *cert = NULL;
     STACK_OF(X509) *chain = sk_X509_new_null();
+    X509_STORE_CTX *verify_ctx = NULL;
     size_t i;
-    int ossl_x509_err, ret;
+    int ossl_x509_err, verified = 0, ret;
 
     /* If any certs are given, convert them to OpenSSL representation, then verify the cert chain. If no certs are given, just give
      * the override_callback to see if we want to stay fail open. */
@@ -1977,7 +1971,12 @@ static int verify_cert(ptls_verify_certificate_t *_self, ptls_t *tls, const char
                 goto Exit;
             }
         }
-        ret = verify_cert_chain(self->cert_store, cert, chain, ptls_is_server(tls), server_name, &ossl_x509_err);
+        if ((verify_ctx = X509_STORE_CTX_new()) == NULL) {
+            ret = PTLS_ERROR_NO_MEMORY;
+            goto Exit;
+        }
+        ret = verify_cert_chain(verify_ctx, self->cert_store, cert, chain, ptls_is_server(tls), server_name, &ossl_x509_err);
+        verified = ret == 0;
     } else {
         ret = PTLS_ALERT_CERTIFICATE_REQUIRED;
         ossl_x509_err = 0;
@@ -1986,6 +1985,10 @@ static int verify_cert(ptls_verify_certificate_t *_self, ptls_t *tls, const char
     /* When override callback is available, let it override the error. */
     if (self->override_callback != NULL)
         ret = self->override_callback->cb(self->override_callback, tls, ret, ossl_x509_err, cert, chain);
+
+    /* Let the application retain the verified chain. */
+    if (ret == 0 && self->store_chain != NULL)
+        ret = self->store_chain->cb(self->store_chain, tls, verified ? verify_ctx : NULL);
 
     if (ret != 0 || num_certs == 0)
         goto Exit;
@@ -1998,6 +2001,8 @@ static int verify_cert(ptls_verify_certificate_t *_self, ptls_t *tls, const char
     *verifier = verify_sign;
 
 Exit:
+    if (verify_ctx != NULL)
+        X509_STORE_CTX_free(verify_ctx);
     if (chain != NULL)
         sk_X509_pop_free(chain, X509_free);
     if (cert != NULL)
